@@ -13,12 +13,30 @@ conf_bk() { /bin/cp -f "$1" "$1.old-$SYS_DT" 2>/dev/null; }
 bigecho() { echo "## $1"; }
 
 upxtom(){
-  cp -r /etc/apt/sources.list /etc/apt/sources.list.bak;
-  echo -e "deb http://mirrors.xtom.jp/debian bullseye main contrib non-free\ndeb http://mirrors.xtom.jp/debian bullseye-updates main contrib non-free\ndeb http://mirrors.xtom.jp/debian bullseye-backports main contrib non-free\ndeb http://mirrors.xtom.jp/debian-security bullseye-security main contrib non-free" > /etc/apt/sources.list;
-  cat /etc/apt/sources.list;
-  apt-get update;
-  sudo apt install linux-image-amd64  -y
+  # 备份当前的 sources.list
+  cp /etc/apt/sources.list /etc/apt/sources.list.bak || exiterr "无法备份 /etc/apt/sources.list"
+  
+  # 使用 Debian 12 (Bookworm) 的 APT 源
+  echo -e "deb http://mirrors.xtom.jp/debian bookworm main contrib non-free\n\
+deb http://mirrors.xtom.jp/debian bookworm-updates main contrib non-free\n\
+deb http://mirrors.xtom.jp/debian bookworm-backports main contrib non-free\n\
+deb http://mirrors.xtom.jp/debian-security bookworm-security main contrib non-free" > /etc/apt/sources.list
+  
+  # 显示新的 sources.list 内容
+  cat /etc/apt/sources.list
+  
+  # 更新 APT 包列表
+  apt-get update || exiterr "apt-get update 失败"
+  
+  # 安装最新的 Linux 内核映像
+  apt-get install linux-image-6.1.0-28-amd64 -y
+
+  echo "确保 GRUB 配置更新并设置默认内核..."
+  # 修改 GRUB 配置以将标准内核设置为默认
+  sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT="Advanced options for Debian GNU\/Linux>Debian GNU\/Linux, with Linux 6.1.0-28-amd64"/' /etc/default/grub
+  update-grub
 }
+
 
 check_ip() {
   IP_REGEX='^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$'
