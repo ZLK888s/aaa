@@ -585,8 +585,8 @@ update_iptables() {
     $ipf 6 -s "$XAUTH_NET" -o "$NET_IFACE" -j ACCEPT
     $ipf 7 -s "$XAUTH_NET" -o ppp+ -j ACCEPT
     iptables -A FORWARD -j DROP
-    $ipp -s "$XAUTH_NET" -o "$NET_IFACE" -j MASQUERADE
-	$ipp -s "$L2TP_NET" -o "$NET_IFACE" -j MASQUERADE
+    $ipp -s "$XAUTH_NET" -o "$NET_IFACE" -m policy --dir out --pol none -j MASQUERADE
+    $ipp -s "$L2TP_NET" -o "$NET_IFACE" -j MASQUERADE
     echo "# Modified by  VPN script" > "$IPT_FILE"
     iptables-save >> "$IPT_FILE"
     if [ -f "$IPT_FILE2" ]; then
