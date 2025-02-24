@@ -98,6 +98,16 @@ EOF
 }
 
 check_iface() {
+  # 优先检查 ens5 是否存在且处于活动状态
+  if [ -d /sys/class/net/ens5 ]; then
+    operstate=$(cat /sys/class/net/ens5/operstate 2>/dev/null)
+    if [ -n "$operstate" ] && [ "$operstate" != "down" ]; then
+      NET_IFACE=ens5
+      return
+    fi
+  fi
+
+  # 原有检测逻辑
   if ! command -v route >/dev/null 2>&1 && ! command -v ip >/dev/null 2>&1; then
     wait_for_apt
     export DEBIAN_FRONTEND=noninteractive
@@ -127,6 +137,7 @@ check_iface() {
     NET_IFACE=eth0
   fi
 }
+
 
 check_creds() {
   [ -n "$YOUR_IPSEC_PSK" ] && VPN_IPSEC_PSK="$YOUR_IPSEC_PSK"
@@ -244,10 +255,17 @@ detect_ip() {
   public_ip=${VPN_PUBLIC_IP:-''}
   check_ip "$public_ip" || get_default_ip
   check_ip "$public_ip" && return 0
+  
   bigecho "Trying to auto discover IP of this server..."
+  
+  # 优先使用 ipip.sh 接口
+  check_ip "$public_ip" || public_ip=$(wget -t 2 -T 10 -qO- https://ip1.ipip.sh/)
+  
+  # 备选方案
   check_ip "$public_ip" || public_ip=$(dig @resolver1.opendns.com -t A -4 myip.opendns.com +short)
   check_ip "$public_ip" || public_ip=$(wget -t 2 -T 10 -qO- http://ipv4.icanhazip.com)
   check_ip "$public_ip" || public_ip=$(wget -t 2 -T 10 -qO- http://ip1.dynupdate.no-ip.com)
+  
   check_ip "$public_ip" || exiterr "Cannot detect this server's public IP. Define it as variable 'VPN_PUBLIC_IP' and re-run this script."
 }
 
@@ -688,6 +706,46 @@ start_services() {
   service xl2tpd restart 2>/dev/null
 }
 
+
+add_check_script() {
+  bigecho "添加 VPN 规则检测脚本..."
+
+  # 创建检测脚本
+  cat > /usr/local/bin/check-vpn-rules.sh <<'EOF'
+#!/bin/bash
+
+RULE1='-s 192.168.19.0/24 -o ens5 -m policy --dir out --pol none -j MASQUERADE'
+RULE2='-s 192.168.18.0/24 -o ens5 -j MASQUERADE'
+
+if ! /sbin/iptables-save -t nat | grep -q -- "$RULE1"; then
+    /sbin/iptables -t nat -I POSTROUTING -s 192.168.19.0/24 -o ens5 -m policy --dir out --pol none -j MASQUERADE
+fi
+
+if ! /sbin/iptables-save -t nat | grep -q -- "$RULE2"; then
+    /sbin/iptables -t nat -I POSTROUTING -s 192.168.18.0/24 -o ens5 -j MASQUERADE
+fi
+EOF
+
+  # 设置权限
+  chmod +x /usr/local/bin/check-vpn-rules.sh
+
+  # 配置 rc.local
+  if [ ! -f /etc/rc.local ]; then
+    echo '#!/bin/sh -e' > /etc/rc.local
+    chmod +x /etc/rc.local
+  fi
+
+  if ! grep -q check-vpn-rules /etc/rc.local; then
+    sed -i '/exit 0/d' /etc/rc.local
+    echo '/usr/local/bin/check-vpn-rules.sh' >> /etc/rc.local
+    echo 'exit 0' >> /etc/rc.local
+  fi
+
+  bigecho "检测脚本已配置"
+}
+
+
+
 show_vpn_info() {
 cat <<EOF
 
@@ -742,6 +800,7 @@ vpnsetup() {
   update_iptables
   apply_gcp_mtu_fix
   enable_on_boot
+  add_check_script
   start_services
   show_vpn_info
 }
