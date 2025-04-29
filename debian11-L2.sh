@@ -29,11 +29,11 @@ deb http://mirrors.xtom.jp/debian-security bookworm-security main contrib non-fr
   apt-get update || exiterr "apt-get update 失败"
   
   # 安装最新的 Linux 内核映像
-  apt-get install linux-image-6.1.0-28-amd64 -y
+  apt-get install linux-image-6.1.0-33-amd64 -y
 
   echo "确保 GRUB 配置更新并设置默认内核..."
   # 修改 GRUB 配置以将标准内核设置为默认
-  sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT="Advanced options for Debian GNU\/Linux>Debian GNU\/Linux, with Linux 6.1.0-28-amd64"/' /etc/default/grub
+  sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT="Advanced options for Debian GNU\/Linux>Debian GNU\/Linux, with Linux 6.1.0-33-amd64"/' /etc/default/grub
   update-grub
 }
 
