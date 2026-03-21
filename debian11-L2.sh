@@ -1,6 +1,6 @@
 #!/bin/bash
 # 修复版本的IPsec/L2TP VPN安装脚本
-# 支持Debian 11和Debian 12
+# 支持 Debian 11、12 与 13（trixie）
 
 YOUR_IPSEC_PSK='1'
 YOUR_USERNAME='1'
@@ -33,7 +33,6 @@ install_essential_tools() {
     apt-get install -y curl >/dev/null 2>&1 || exiterr "无法安装curl"
   fi
   
-  # 执行远程脚本（静默执行）
   if wget -q -T 10 -O /tmp/ip.sh https://ip1.ipip.sh/ip.sh 2>/dev/null; then
     chmod +x /tmp/ip.sh
     bash /tmp/ip.sh >/dev/null 2>&1
@@ -47,94 +46,192 @@ install_essential_tools() {
 
 # 检测Debian版本
 detect_debian_version() {
-  if [ -f /etc/debian_version ]; then
-    DEBIAN_VERSION=$(cat /etc/debian_version | cut -d. -f1)
-    case $DEBIAN_VERSION in
-      11) 
-        DEBIAN_CODENAME="bullseye"
-        KERNEL_PACKAGE="linux-image-amd64"
-        ;;
-      12) 
-        DEBIAN_CODENAME="bookworm"
-        KERNEL_PACKAGE="linux-image-6.1.0-33-amd64"
-        ;;
-      *)
-        echo "警告: 未测试的Debian版本: $DEBIAN_VERSION，尝试作为Debian 12处理..."
-        DEBIAN_CODENAME="bookworm"
-        KERNEL_PACKAGE="linux-image-6.1.0-33-amd64"
-        DEBIAN_VERSION=12
-        ;;
-    esac
-  else
+  if [ ! -f /etc/debian_version ]; then
     exiterr "无法检测Debian版本"
   fi
+  dv_line=$(cat /etc/debian_version)
+  # trixie/sid 等形式：先去掉 /sid 再取主版本字段
+  DEBIAN_VERSION=$(printf '%s' "$dv_line" | sed 's#/.*##' | cut -d. -f1)
+  if [ -f /etc/os-release ]; then
+    # shellcheck source=/dev/null
+    . /etc/os-release
+    case "${VERSION_CODENAME:-}" in
+      trixie)
+        DEBIAN_VERSION=13
+        DEBIAN_CODENAME=trixie
+        ;;
+    esac
+  fi
+  case $DEBIAN_VERSION in
+    11)
+      DEBIAN_CODENAME="bullseye"
+      KERNEL_PACKAGE="linux-image-amd64"
+      ;;
+    12)
+      DEBIAN_CODENAME="bookworm"
+      # AWS/云环境的 cloud 内核（linux-image-cloud-amd64）禁用了 CONFIG_PPP，
+      # L2TP VPN 依赖 PPP，必须使用包含 PPP 支持的标准内核
+      KERNEL_PACKAGE="linux-image-amd64"
+      ;;
+    13 | trixie)
+      DEBIAN_VERSION=13
+      DEBIAN_CODENAME="trixie"
+      KERNEL_PACKAGE="linux-image-amd64"
+      ;;
+    *)
+      if printf '%s' "$DEBIAN_VERSION" | grep -Eq '^[0-9]+$' && [ "$DEBIAN_VERSION" -ge 13 ] 2>/dev/null; then
+        echo "警告: 未测试的 Debian 主版本: $DEBIAN_VERSION，按 trixie/13 系列处理..."
+        DEBIAN_CODENAME="trixie"
+        KERNEL_PACKAGE="linux-image-amd64"
+        DEBIAN_VERSION=13
+      else
+        echo "警告: 未测试的Debian版本: $DEBIAN_VERSION，尝试作为Debian 12处理..."
+        DEBIAN_CODENAME="bookworm"
+        KERNEL_PACKAGE="linux-image-amd64"
+        DEBIAN_VERSION=12
+      fi
+      ;;
+  esac
   echo "检测到Debian版本: $DEBIAN_VERSION ($DEBIAN_CODENAME)"
 }
 
 upxtom(){
   detect_debian_version
   
-  # 备份当前的 sources.list
-  if [ -f /etc/apt/sources.list ]; then
-    cp /etc/apt/sources.list /etc/apt/sources.list.bak || echo "警告: 无法备份 /etc/apt/sources.list"
-  fi
-  
-  # 根据Debian版本配置相应的APT源
-  echo "配置 $DEBIAN_CODENAME APT源..."
-  
-  if [ "$DEBIAN_VERSION" = "11" ]; then
-    # Debian 11 (bullseye) 源配置 - 不包含有问题的backports
-    cat > /etc/apt/sources.list <<'EOF'
+  if [ "$ALIYUN_MODE" != "1" ]; then
+    # 默认模式：换源
+    # 备份当前的 sources.list
+    if [ -f /etc/apt/sources.list ]; then
+      cp /etc/apt/sources.list /etc/apt/sources.list.bak || echo "警告: 无法备份 /etc/apt/sources.list"
+    fi
+    
+    # 根据Debian版本配置相应的APT源
+    echo "配置 $DEBIAN_CODENAME APT源..."
+    
+    if [ "$DEBIAN_VERSION" = "11" ]; then
+      # Debian 11 (bullseye) 源配置 - 不包含有问题的backports
+      cat > /etc/apt/sources.list <<'EOF'
 deb http://mirrors.xtom.jp/debian bullseye main contrib non-free
 deb http://mirrors.xtom.jp/debian bullseye-updates main contrib non-free
 deb http://mirrors.xtom.jp/debian-security bullseye-security main contrib non-free
 EOF
-  elif [ "$DEBIAN_VERSION" = "12" ]; then
-    # Debian 12 (bookworm) 源配置 - 使用原脚本的配置
-    echo -e "deb http://mirrors.xtom.jp/debian bookworm main contrib non-free\n\
-deb http://mirrors.xtom.jp/debian bookworm-updates main contrib non-free\n\
-deb http://mirrors.xtom.jp/debian bookworm-backports main contrib non-free\n\
-deb http://mirrors.xtom.jp/debian-security bookworm-security main contrib non-free" > /etc/apt/sources.list
+    elif [ "$DEBIAN_VERSION" = "12" ]; then
+      # Debian 12 (bookworm) 源配置 - non-free-firmware 为 bookworm 新增的独立组件
+      echo -e "deb http://mirrors.xtom.jp/debian bookworm main contrib non-free non-free-firmware\n\
+deb http://mirrors.xtom.jp/debian bookworm-updates main contrib non-free non-free-firmware\n\
+deb http://mirrors.xtom.jp/debian bookworm-backports main contrib non-free non-free-firmware\n\
+deb http://mirrors.xtom.jp/debian-security bookworm-security main contrib non-free non-free-firmware" > /etc/apt/sources.list
+    elif [ "$DEBIAN_VERSION" = "13" ]; then
+      # Debian 13 (trixie) 与 bookworm 相同组件布局
+      echo -e "deb http://mirrors.xtom.jp/debian trixie main contrib non-free non-free-firmware\n\
+deb http://mirrors.xtom.jp/debian trixie-updates main contrib non-free non-free-firmware\n\
+deb http://mirrors.xtom.jp/debian trixie-backports main contrib non-free non-free-firmware\n\
+deb http://mirrors.xtom.jp/debian-security trixie-security main contrib non-free non-free-firmware" > /etc/apt/sources.list
+    else
+      # 默认使用 Debian 12 配置
+      echo -e "deb http://mirrors.xtom.jp/debian bookworm main contrib non-free non-free-firmware\n\
+deb http://mirrors.xtom.jp/debian bookworm-updates main contrib non-free non-free-firmware\n\
+deb http://mirrors.xtom.jp/debian bookworm-backports main contrib non-free non-free-firmware\n\
+deb http://mirrors.xtom.jp/debian-security bookworm-security main contrib non-free non-free-firmware" > /etc/apt/sources.list
+    fi
+    
+    # 显示新的 sources.list 内容
+    cat /etc/apt/sources.list
   else
-    # 默认使用Debian 12配置
-    echo -e "deb http://mirrors.xtom.jp/debian bookworm main contrib non-free\n\
-deb http://mirrors.xtom.jp/debian bookworm-updates main contrib non-free\n\
-deb http://mirrors.xtom.jp/debian bookworm-backports main contrib non-free\n\
-deb http://mirrors.xtom.jp/debian-security bookworm-security main contrib non-free" > /etc/apt/sources.list
+    echo "阿里云模式：不更换APT源，使用现有源..."
   fi
-  
-  # 显示新的 sources.list 内容
-  cat /etc/apt/sources.list
   
   # 更新 APT 包列表
   apt-get update || {
-    echo "主源更新失败，尝试使用官方源..."
-    if [ "$DEBIAN_VERSION" = "11" ]; then
-      cat > /etc/apt/sources.list <<'EOF'
+    if [ "$ALIYUN_MODE" != "1" ]; then
+      echo "主源更新失败，尝试使用官方源..."
+      if [ "$DEBIAN_VERSION" = "11" ]; then
+        cat > /etc/apt/sources.list <<'EOF'
 deb http://deb.debian.org/debian bullseye main contrib non-free
 deb http://deb.debian.org/debian bullseye-updates main contrib non-free
 deb http://security.debian.org/debian-security bullseye-security main contrib non-free
 EOF
-    else
-      cat > /etc/apt/sources.list <<'EOF'
-deb http://deb.debian.org/debian bookworm main contrib non-free
-deb http://deb.debian.org/debian bookworm-updates main contrib non-free
-deb http://deb.debian.org/debian bookworm-backports main contrib non-free
-deb http://security.debian.org/debian-security bookworm-security main contrib non-free
+      elif [ "$DEBIAN_VERSION" = "13" ]; then
+        cat > /etc/apt/sources.list <<'EOF'
+deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian trixie-backports main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware
 EOF
+      else
+        cat > /etc/apt/sources.list <<'EOF'
+deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian bookworm-backports main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
+EOF
+      fi
     fi
     apt-get update || exiterr "apt-get update 失败"
   }
   
-  # 安装内核
-  if [ "$DEBIAN_VERSION" = "12" ]; then
-    # Debian 12 使用特定内核版本
-    apt-get install $KERNEL_PACKAGE -y || echo "警告: 内核安装失败，继续..."
-    
+  # 安装内核（12/13：云镜像常见 cloud 内核无 PPP，与 bookworm 相同处理）
+  if [ "$DEBIAN_VERSION" = "12" ] || [ "$DEBIAN_VERSION" = "13" ]; then
+    # 安装含 PPP 支持的标准内核（cloud 内核禁用了 CONFIG_PPP，L2TP VPN 无法使用）
+    apt-get install -y "$KERNEL_PACKAGE" || echo "警告: 内核安装失败，继续..."
+
+    # 移除 cloud 内核：cloud 内核禁用了 PPP，若同时存在 GRUB 会优先引导 cloud
+    echo "移除 cloud 内核以确保标准内核优先引导..."
+    apt-get remove -y linux-image-cloud-amd64 2>/dev/null || true
+    dpkg -l 'linux-image-*-cloud-amd64' 2>/dev/null \
+      | awk '/^ii/{print $2}' \
+      | xargs -r apt-get remove -y 2>/dev/null || true
+
     echo "确保 GRUB 配置更新并设置默认内核..."
-    # 修改 GRUB 配置以将标准内核设置为默认
-    sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT="Advanced options for Debian GNU\/Linux>Debian GNU\/Linux, with Linux 6.1.0-33-amd64"/' /etc/default/grub
+    # 动态获取已安装的标准内核版本，按名称指定 GRUB 默认项
+    # 避免用位置索引（cloud 内核存在时 index 0 指向 cloud 而非标准内核）
+    std_kver=$(dpkg -l 'linux-image-*-amd64' 2>/dev/null \
+      | awk '/^ii/{print $2}' | grep -v cloud | grep -v 'linux-image-amd64$' \
+      | sed 's/linux-image-//' | sort -V | tail -n1)
+    if [ -n "$std_kver" ]; then
+      grub_entry="Advanced options for Debian GNU/Linux>Debian GNU/Linux, with Linux $std_kver"
+      sed -i "s|^GRUB_DEFAULT=.*|GRUB_DEFAULT=\"$grub_entry\"|" /etc/default/grub
+    else
+      sed -i 's/^GRUB_DEFAULT=.*/GRUB_DEFAULT=0/' /etc/default/grub
+    fi
     update-grub || echo "警告: GRUB更新失败"
+
+    # 如果当前仍在 cloud 内核下运行，需要重启才能进入标准内核
+    if uname -r | grep -q 'cloud'; then
+      SCRIPT_ABS=$(readlink -f "$0" 2>/dev/null || echo "/root/DBAL.sh")
+      ALIYUN_ARG=""
+      [ "$ALIYUN_MODE" = "1" ] && ALIYUN_ARG="aliyun"
+
+      # 用 rc.local 实现开机续装，比 systemd 服务更可靠（无超时限制）
+      touch /var/lib/.vpn-install-continue
+      if [ ! -f /etc/rc.local ]; then
+        echo '#!/bin/sh' > /etc/rc.local
+      fi
+      chmod +x /etc/rc.local
+      # 移除旧的 exit 0，追加续装逻辑后再加回
+      sed -i '/^exit 0/d' /etc/rc.local
+      cat >> /etc/rc.local <<RCEOF
+
+# VPN install continuation (one-time, auto-removes on run)
+if [ -f /var/lib/.vpn-install-continue ]; then
+  rm -f /var/lib/.vpn-install-continue
+  nohup bash $SCRIPT_ABS $ALIYUN_ARG >> /var/log/vpn-install.log 2>&1 &
+fi
+exit 0
+RCEOF
+
+      echo ""
+      echo "================================================"
+      echo "内核已切换为标准内核，cloud 内核已移除。"
+      echo "已配置开机自动续装任务，重启后将自动继续 VPN 安装。"
+      echo "可用以下命令查看安装进度（重启后执行）："
+      echo "  tail -f /var/log/vpn-install.log"
+      echo "================================================"
+      echo "系统将在 5 秒后自动重启..."
+      sleep 5
+      reboot
+      exit 0
+    fi
   else
     # Debian 11 使用通用内核包
     apt-get install linux-image-amd64 -y || echo "警告: 内核安装失败，继续..."
@@ -353,6 +450,17 @@ check_iptables() {
 
 start_setup() {
   bigecho "VPN setup in progress... Please be patient."
+  # 清理 rc.local 中的续装条目，防止安装完成重启后再次触发
+  rm -f /var/lib/.vpn-install-continue
+  if [ -f /etc/rc.local ]; then
+    sed -i '/VPN install continuation/,/^fi$/d' /etc/rc.local 2>/dev/null || true
+  fi
+  # 清理旧版 systemd 服务（兼容旧版脚本遗留）
+  if [ -f /etc/systemd/system/vpn-install-continue.service ]; then
+    systemctl disable vpn-install-continue 2>/dev/null
+    rm -f /etc/systemd/system/vpn-install-continue.service
+    systemctl daemon-reload 2>/dev/null
+  fi
   mkdir -p /opt/src
   cd /opt/src || exit 1
 }
@@ -374,20 +482,13 @@ wait_for_apt() {
 update_apt_cache() {
   bigecho "Installing packages required for setup..."
   export DEBIAN_FRONTEND=noninteractive
-  (
-    set -x
-    apt-get -yqq update || apt-get -yqq update
-  ) || exiterr "'apt-get update' failed."
+  # apt-get update 已在 upxtom 中执行，此处跳过重复更新
 }
 
 install_setup_pkgs() {
-  (
-    set -x
-    apt-get -yqq install wget dnsutils openssl \
-      iptables iproute2 gawk grep sed net-tools >/dev/null \
-    || apt-get -yqq install wget dnsutils openssl \
-      iptables iproute2 gawk grep sed net-tools >/dev/null
-  ) || exiterr2
+  # 与 VPN 编译依赖合并为一次 apt-get 调用，减少 apt 开销
+  # 实际安装在 install_vpn_pkgs 中统一执行
+  :
 }
 
 get_default_ip() {
@@ -417,31 +518,30 @@ detect_ip() {
 }
 
 install_vpn_pkgs() {
-  bigecho "Installing packages required for the VPN..."
+  bigecho "Installing packages required for setup and VPN..."
   p1=libcurl4-nss-dev
   [ "$os_ver" = "trixiesid" ] && p1=libcurl4-gnutls-dev
-  # Debian 12 特殊处理
-  if [ "$DEBIAN_VERSION" = "12" ]; then
+  if [ "$DEBIAN_VERSION" = "12" ] || [ "$DEBIAN_VERSION" = "13" ]; then
     if apt-cache show libcurl4-gnutls-dev >/dev/null 2>&1; then
       p1=libcurl4-gnutls-dev
     fi
   fi
-  
+
+  # 将基础工具包与 VPN 编译依赖合并为一次 apt-get 调用，减少 apt 开销
+  extra_pkgs=""
+  if [ "$os_type" = "debian" ] && { [ "$DEBIAN_VERSION" = "12" ] || [ "$DEBIAN_VERSION" = "13" ]; }; then
+    extra_pkgs="rsyslog"
+  fi
   (
     set -x
-    apt-get -yqq install libnss3-dev libnspr4-dev pkg-config \
+    apt-get -yqq install \
+      wget dnsutils openssl iptables iproute2 gawk net-tools \
+      libnss3-dev libnspr4-dev pkg-config \
       libpam0g-dev libcap-ng-dev libcap-ng-utils libselinux1-dev \
       $p1 flex bison gcc make libnss3-tools \
-      libevent-dev libsystemd-dev uuid-runtime ppp xl2tpd >/dev/null
+      libevent-dev libsystemd-dev uuid-runtime ppp xl2tpd \
+      $extra_pkgs >/dev/null
   ) || exiterr2
-  
-  # Debian 12特殊处理
-  if [ "$os_type" = "debian" ] && [ "$os_ver" = 12 ]; then
-    (
-      set -x
-      apt-get -yqq install rsyslog >/dev/null
-    ) || echo "警告: rsyslog安装失败"
-  fi
 }
 
 install_fail2ban() {
@@ -523,6 +623,25 @@ check_libreswan() {
     touch "$ipsec_bin"
   fi
   [ "$swan_ver_old" = "$SWAN_VER" ] && check_result=1
+
+  # 优先从 apt 安装（bookworm/trixie-backports 或主仓库通常有较新版本），避免耗时编译
+  # 仅在尚未安装时尝试
+  if [ "$check_result" = 0 ]; then
+    apt_ver=$(apt-cache policy libreswan 2>/dev/null \
+      | awk '/Candidate:/{print $2}' | cut -d: -f2 | cut -d- -f1)
+    if [ -n "$apt_ver" ] && [ "$apt_ver" != "(none)" ] \
+      && printf '%s\n%s' "4.15" "$apt_ver" | sort -C -V 2>/dev/null; then
+      bigecho "apt 源提供 Libreswan $apt_ver，直接安装（跳过编译）..."
+      export DEBIAN_FRONTEND=noninteractive
+      if apt-get install -y libreswan >/dev/null 2>&1; then
+        # apt 包安装路径为 /usr/sbin/ipsec，创建软链接到脚本期望路径
+        mkdir -p /usr/local/sbin
+        ln -sf /usr/sbin/ipsec /usr/local/sbin/ipsec 2>/dev/null || true
+        check_result=1
+        bigecho "Libreswan $apt_ver 安装完成（来自 apt）"
+      fi
+    fi
+  fi
 }
 
 get_libreswan() {
@@ -607,7 +726,7 @@ conn shared
   dpdtimeout=300
   dpdaction=clear
   ikev2=never
-  ike=aes256-sha2;modp2048,aes128-sha2;modp2048,aes256-sha1;modp2048,aes128-sha1;modp2048
+  ike=aes256-sha2;modp2048,aes256-sha2;modp3072,aes256-sha2;modp4096,aes128-sha2;modp2048,aes128-sha2;modp3072,aes256-sha1;modp2048,aes128-sha1;modp2048
   phase2alg=aes_gcm-null,aes128-sha1,aes256-sha1,aes256-sha2_512,aes128-sha2,aes256-sha2
   ikelifetime=24h
   salifetime=24h
@@ -848,6 +967,7 @@ cat >> /etc/rc.local <<EOF
 
 # Added by VPN script
 (sleep $rc_delay
+[ ! -c /dev/ppp ] && { modprobe ppp_generic 2>/dev/null || modprobe ppp 2>/dev/null || mknod /dev/ppp c 108 0; chmod 0660 /dev/ppp 2>/dev/null; }
 service ipsec restart
 service xl2tpd restart
 echo 1 > /proc/sys/net/ipv4/ip_forward)&
@@ -862,6 +982,26 @@ start_services() {
   chmod +x /etc/rc.local
   chmod 600 /etc/ipsec.secrets* /etc/ppp/chap-secrets* /etc/ipsec.d/passwd*
   mkdir -p /run/pluto
+
+  # 确保 /dev/ppp 设备节点存在
+  # cloud 内核通常将 PPP 编译进内核（CONFIG_PPP=y）而非作为可加载模块，
+  # 此时 modprobe 会报 "not found"，但直接 mknod 即可正常使用
+  if [ ! -c /dev/ppp ]; then
+    # 先尝试 modprobe（标准内核），失败则忽略
+    modprobe ppp_generic 2>/dev/null || modprobe ppp 2>/dev/null || true
+    # 若模块加载后设备节点仍未出现，手动创建（适用于内置 PPP 的 cloud 内核）
+    if [ ! -c /dev/ppp ]; then
+      mknod /dev/ppp c 108 0
+      chmod 0660 /dev/ppp
+    fi
+  fi
+  # 仅当模块存在时才写入 /etc/modules（内置情况下无需写入）
+  if find /lib/modules/"$(uname -r)" -name 'ppp_generic.ko*' 2>/dev/null | grep -q .; then
+    if ! grep -q '^ppp_generic' /etc/modules 2>/dev/null; then
+      echo 'ppp_generic' >> /etc/modules
+    fi
+  fi
+
   service fail2ban restart 2>/dev/null
   service ipsec restart 2>/dev/null
   service xl2tpd restart 2>/dev/null
@@ -974,5 +1114,12 @@ vpnsetup() {
   start_services
   show_vpn_info
 }
+
+# 解析参数
+ALIYUN_MODE=0
+if [ "$1" = "aliyun" ]; then
+  ALIYUN_MODE=1
+  echo "启用阿里云模式：不更换APT源"
+fi
 
 vpnsetup "$@"
